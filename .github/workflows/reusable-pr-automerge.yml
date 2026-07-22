@@ -1,0 +1,174 @@
+# Reusable workflow: pr-automerge — auto-merges approved release PRs once required CI passes.
+# Triggered in the caller by `pull_request_review` (submitted); the originating review event
+# is inherited via `workflow_call` and read through `${{ github.event.* }}`.
+#
+# Language-specific values (required check names, exact vs substring matching, commit-title
+# prefix) are resolved internally by the `resolve-config` job, which detects the project language
+# from the checked-out PR head (pyproject.toml/setup.py => python profile, package.json =>
+# typescript profile; defaults to python if neither is found).
+#
+# NOTE on commit title: release branches are named `release/v<version>` (e.g. release/v1.2.3),
+# so `head.ref.split('/')[1]` == "v1.2.3". The python profile prepends an extra "v" (preserving
+# the historical "Release vv1.2.3"); the typescript profile does not ("Release v1.2.3"). This is
+# intentional fidelity to the live per-language workflows.
+
+name: Reusable - PR Automerge
+
+# caller-on:
+#   pull_request_review:
+#     types:
+#     - submitted
+
+on:
+  workflow_call:
+    # No inputs: every language-specific value is resolved internally by detecting the project
+    # language from the checked-out PR head. Callers invoke with `secrets: inherit` only.
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # resolve-config: detect the project language from the checked-out PR head and map it to the
+  # matching automerge config (outputs consumed by the auto-merge job). pyproject.toml/setup.py
+  # => python profile, package.json => typescript profile; defaults to python if neither found.
+  resolve-config:
+    name: Resolve repo-specific config
+    runs-on: ubuntu-latest
+    # Mirror the auto-merge guard so we don't do work for irrelevant reviews. Keep this in
+    # sync with the auto-merge job's `if:` below.
+    if: |
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'release/') &&
+      github.event.pull_request.base.ref == 'main'
+    outputs:
+      # JSON array of required status-check names.
+      required_checks: ${{ steps.cfg.outputs.required_checks }}
+      # 'exact' => check name must equal the configured name; 'includes' => substring match.
+      match_mode: ${{ steps.cfg.outputs.match_mode }}
+      # Prefix prepended to the version segment when building the squash commit title.
+      commit_title_prefix: ${{ steps.cfg.outputs.commit_title_prefix }}
+    steps:
+      # Checkout is only needed for the filesystem-detection fallback. Fetch a shallow tree.
+      - name: Checkout (for language detection)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve config
+        id: cfg
+        run: |
+          set -euo pipefail
+
+          # Required status-check names per language profile. Python check names are exact-matched;
+          # TypeScript names are substring-matched (see MATCH_MODE) against the live check runs.
+          PY_DEFAULT_CHECKS='["Lint","Test Python 3.10","Test Python 3.11","Test Python 3.12","Test Python 3.13","Build Package"]'
+          TS_CHECKS='["Test on Node.js (ubuntu-latest)","Test on Node.js 22.x (multi-platform)","Code Coverage"]'
+
+          REQUIRED_CHECKS=""
+          MATCH_MODE=""
+          COMMIT_TITLE_PREFIX=""
+
+          # Detect the project language from the checked-out PR head. Python is matched first; a
+          # package.json (with no Python manifest) selects TypeScript; neither defaults to Python.
+          if [ -f pyproject.toml ] || [ -f setup.py ]; then
+            echo "Detected Python project (pyproject.toml/setup.py)."
+            REQUIRED_CHECKS="$PY_DEFAULT_CHECKS"
+            MATCH_MODE="exact"
+            COMMIT_TITLE_PREFIX="v"
+          elif [ -f package.json ]; then
+            echo "Detected TypeScript/Node project (package.json)."
+            REQUIRED_CHECKS="$TS_CHECKS"
+            MATCH_MODE="includes"
+            COMMIT_TITLE_PREFIX=""
+          else
+            echo "Could not detect language; defaulting to Python profile."
+            REQUIRED_CHECKS="$PY_DEFAULT_CHECKS"
+            MATCH_MODE="exact"
+            COMMIT_TITLE_PREFIX="v"
+          fi
+
+          {
+            echo "required_checks=$REQUIRED_CHECKS"
+            echo "match_mode=$MATCH_MODE"
+            echo "commit_title_prefix=$COMMIT_TITLE_PREFIX"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved config:"
+          echo "  required_checks=$REQUIRED_CHECKS"
+          echo "  match_mode=$MATCH_MODE"
+          echo "  commit_title_prefix='$COMMIT_TITLE_PREFIX'"
+
+  # auto-merge: the original per-repo logic, parameterized by resolve-config outputs.
+  auto-merge:
+    name: Auto-merge Release PRs
+    runs-on: ubuntu-latest
+    needs: resolve-config
+    # Only run when PR is approved and it's a release PR.
+    # (Same guard as resolve-config; kept explicit so the job is self-documenting.)
+    if: |
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'release/') &&
+      github.event.pull_request.base.ref == 'main'
+
+    steps:
+      - name: Check CI status
+        id: ci-status
+        uses: actions/github-script@v8
+        env:
+          REQUIRED_CHECKS: ${{ needs.resolve-config.outputs.required_checks }}
+          MATCH_MODE: ${{ needs.resolve-config.outputs.match_mode }}
+        with:
+          script: |
+            const { data: checkRuns } = await github.rest.checks.listForRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.payload.pull_request.head.sha
+            });
+
+            // Required checks + match mode are resolved per-repo by the resolve-config job.
+            const requiredChecks = JSON.parse(process.env.REQUIRED_CHECKS);
+            const matchMode = process.env.MATCH_MODE; // 'exact' | 'includes'
+
+            const allPassed = requiredChecks.every(checkName => {
+              const check = checkRuns.check_runs.find(run =>
+                matchMode === 'includes'
+                  ? run.name.includes(checkName)
+                  : run.name === checkName
+              );
+              if (!check) {
+                console.log(`Check not found: ${checkName}`);
+                return false;
+              }
+              const passed = check.conclusion === 'success';
+              console.log(`${checkName}: ${passed ? '✓' : '✗'} (${check.conclusion})`);
+              return passed;
+            });
+
+            console.log(`All required checks passed: ${allPassed}`);
+            return allPassed;
+
+      - name: Auto-merge PR
+        if: steps.ci-status.outputs.result == 'true'
+        uses: actions/github-script@v8
+        env:
+          COMMIT_TITLE_PREFIX: ${{ needs.resolve-config.outputs.commit_title_prefix }}
+        with:
+          script: |
+            const prefix = process.env.COMMIT_TITLE_PREFIX || '';
+            const versionSegment = context.payload.pull_request.head.ref.split('/')[1];
+
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              merge_method: 'squash',
+              commit_title: `Release ${prefix}${versionSegment}`,
+              commit_message: 'Auto-merged by release workflow'
+            });
+
+            console.log('✓ PR auto-merged successfully');

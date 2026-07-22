@@ -1,0 +1,85 @@
+# TEST pair for reusable-dependabot-auto-merge.yml.
+# Mirrors the reusable: mints the App token and parses
+# Dependabot metadata FOR REAL, and keeps the update-type gating + the major-bump
+# log-only branch.
+# STUBBED (mutation only):
+#   - Enable auto-merge: `gh pr merge --auto --squash` (merges the PR).
+# Safe to fire on a push to feat/caller-workflows.
+
+name: "TEST - Dependabot Auto Merge"
+
+# caller-on:
+#   push:
+#     branches:
+#     - feat/caller-workflows
+#   pull_request:
+#     types:
+#     - opened
+#     - synchronize
+#     - reopened
+#     - ready_for_review
+
+on:
+  workflow_call:
+    # No inputs or `secrets:` block: caller only needs `uses:` + `secrets: inherit`.
+
+permissions:
+  contents: write      # required to execute the squash merge
+  pull-requests: write # required to enable auto-merge
+  id-token: write      # required for OIDC assume of the App-token minting role
+
+jobs:
+  dependabot-auto-merge:
+    name: Auto-merge minor/patch PRs
+    runs-on: ubuntu-latest
+
+    # Only act on Dependabot PRs. In a reusable workflow the event context is
+    # inherited from the CALLER's triggering event, so we also confirm the
+    # triggering event was a pull_request before doing anything.
+    #
+    # The correct login is 'dependabot[bot]' — the bare string 'dependabot'
+    # never matches and would silently skip all runs.
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+
+      # patch and minor bumps: enable auto-merge.
+      # GitHub holds the merge until all required status checks pass.
+      # If CI fails the PR stays open — no merge happens.
+      # STUB: the real step runs `gh pr merge --auto --squash` (a merge mutation).
+      # The metadata gate above ran for real; only the merge is stubbed here.
+      - name: Enable auto-merge for minor/patch bumps
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          echo "ℹ️  (stub) would: gh pr merge --auto --squash \"$PR_URL\""
+          echo "ℹ️  (stub) auto-merge would be enabled: ${{ steps.metadata.outputs.dependency-names }} \
+          (${{ steps.metadata.outputs.previous-version }} → \
+          ${{ steps.metadata.outputs.new-version }}, \
+          ${{ steps.metadata.outputs.update-type }})"
+
+      # major bumps: log clearly and do nothing.
+      # The PR stays open and is assigned to aws/bedrock-agentcore-maintainers
+      # via dependabot.yml for human review.
+      - name: Skip major bumps — human review required
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: |
+          echo "⏭ Skipped: ${{ steps.metadata.outputs.dependency-names }} \
+          is a major bump (${{ steps.metadata.outputs.previous-version }} → \
+          ${{ steps.metadata.outputs.new-version }}). \
+          Requires review from aws/bedrock-agentcore-maintainers."

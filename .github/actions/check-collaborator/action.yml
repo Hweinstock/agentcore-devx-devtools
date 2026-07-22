@@ -1,0 +1,91 @@
+name: Check collaborator
+description: >
+  Authorize a user by their LIVE GitHub permission on this repo: does <subject>
+  have at least <required-permission> (write/admin)? Optionally check org-team
+  membership first (team-slug). Emits is-authorized ('true' | 'false').
+  This is the permission-based method; complements check-authorized-user, which
+  matches a AUTHORIZED_USERS allowlist.
+
+inputs:
+  subject:
+    description: The login to authorize (caller extracts it from its event).
+    required: true
+  required-permission:
+    description: >
+      Minimum repo permission that counts as authorized: 'write' (accepts
+      write / maintain / admin) or 'admin' (admin only).
+    required: false
+    default: write
+  team-slug:
+    description: >
+      Optional org team slug. When set, membership in this team authorizes the
+      user (checked first); on ANY failure it falls back to the repo-permission
+      check below. Requires github-token to have org read — otherwise the team
+      check simply falls through (matching current behavior with GITHUB_TOKEN).
+    required: false
+    default: ""
+  github-token:
+    description: >
+      Token for the API calls; defaults to the job's GITHUB_TOKEN. Pass an App
+      token with org read to make team-slug effective.
+    required: false
+    default: ""
+
+outputs:
+  is-authorized:
+    description: "'true' if the subject meets the team/permission bar, else 'false'."
+    value: ${{ steps.check.outputs.is-authorized }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check collaborator authorization
+      id: check
+      uses: actions/github-script@v9
+      env:
+        # Passed via env (not ${{ }} interpolation) so an attacker-controlled login
+        # on pull_request_target cannot inject into the script body.
+        SUBJECT: ${{ inputs.subject }}
+        REQUIRED_PERMISSION: ${{ inputs.required-permission }}
+        TEAM_SLUG: ${{ inputs.team-slug }}
+      with:
+        github-token: ${{ inputs.github-token || github.token }}
+        script: |
+          const subject = process.env.SUBJECT;
+          const requiredPermission = process.env.REQUIRED_PERMISSION;
+          const teamSlug = process.env.TEAM_SLUG;
+          const { owner, repo } = context.repo;
+          const setResult = (ok) => core.setOutput('is-authorized', ok ? 'true' : 'false');
+
+          // Optional first tier: org-team membership. Any failure (including a token
+          // without org read) falls through to the repo-permission check below.
+          if (teamSlug) {
+            try {
+              await github.rest.teams.getMembershipForUserInOrg({
+                org: owner,
+                team_slug: teamSlug,
+                username: subject,
+              });
+              core.info(`${subject} is a member of ${owner}/${teamSlug} — authorized`);
+              return setResult(true);
+            } catch (err) {
+              core.info(`Team check for ${subject} did not pass (${err.message}); falling back to repo permission.`);
+            }
+          }
+
+          // Repo-permission tier. External users on private repos can 404 here;
+          // treat any failure as "not authorized".
+          const accepted = requiredPermission === 'admin'
+            ? ['admin']
+            : ['write', 'maintain', 'admin'];
+          try {
+            const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner, repo, username: subject,
+            });
+            const ok = accepted.includes(data.permission);
+            core.info(`${subject} permission=${data.permission} required=${requiredPermission} authorized=${ok}`);
+            setResult(ok);
+          } catch (err) {
+            core.info(`Permission lookup failed for ${subject}: ${err.message}. Treating as not authorized.`);
+            setResult(false);
+          }

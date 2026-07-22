@@ -1,0 +1,57 @@
+# TEST reusable workflow: pr-labeler (pair of reusable-pr-labeler.yml)
+#
+# Mirrors the reusable: checkout of the trusted base ref and the labeler-config
+# format auto-detection run VERBATIM (read-only). STUBBED (mutation): the two
+# actions/labeler steps that add labels based on changed files. Safe on a dev branch.
+name: "TEST - pr-labeler"
+
+# caller-on:
+#   push:
+#     branches:
+#     - feat/caller-workflows
+#   pull_request_target:
+#     types:
+#     - opened
+#     - synchronize
+#     - reopened
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Auto-label PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Check out the BASE repo (trusted) so we can read the labeler config and
+      # let actions/labeler resolve it from the workspace. Under
+      # pull_request_target this checks out the base ref, NOT the untrusted PR head.
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Resolve the labeler config path (consumers use the v5+ `changed-files:` schema).
+      - name: Detect labeler config
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG=".github/labeler.yml"
+          if [ -f .github/labeler.yaml ]; then
+            CONFIG=".github/labeler.yaml"
+          fi
+          echo "Using labeler config: $CONFIG"
+          echo "config-path=$CONFIG" >> "$GITHUB_OUTPUT"
+
+      # STUB: real workflow adds labels via actions/labeler@v6 (label mutation).
+      # Config path was resolved for real above; only the mutation is stubbed.
+      - name: Label by changed files (labeler v6)
+        run: |
+          echo "ℹ️  (stub) would: run actions/labeler@v6 (add labels from changed files)"
+          echo "ℹ️  (stub) config-path=${{ steps.detect.outputs.config-path }}"

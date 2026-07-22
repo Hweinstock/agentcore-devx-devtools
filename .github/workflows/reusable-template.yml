@@ -1,0 +1,67 @@
+# =============================================================================
+# REUSABLE WORKFLOW TEMPLATE — copy when authoring a new reusable-<name>.yml
+# =============================================================================
+# This is the source of truth for reusables. Fill in the three modules below. Callers
+# are authored by hand from caller-template.yml (there is no generation step), so this
+# file no longer carries a caller-trigger block — the caller owns its own `on:`.
+
+name: Reusable - <Name>
+
+# ----- [1] INPUTS (omit if none): the real contract. Each caller mirrors these into
+# its own workflow_dispatch inputs + `with:` forwards. workflow_call has NO
+# `type: choice`; for a dropdown use `type: string` + a `# options: [...]` comment on
+# the line above `description:` (the caller re-declares it as a choice). Read via
+# inputs.X (NOT github.event.inputs.X).
+on:
+  workflow_call:
+    inputs:
+      example_choice_input:
+        # options: [patch, minor, major]
+        description: What this input controls
+        required: true
+        type: string
+      example_optional_input:
+        description: Optional value with a default
+        required: false
+        type: string
+        default: ""
+
+# ----- [2] PERMISSIONS: id-token: write is required to fetch secrets below. --------
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    steps:
+      # ----- [3] SECRETS (omit if none): fetch from Secrets Manager via the shared
+      # composite. List bare NAMES: `shared:` -> shared/<NAME>, `repo:` ->
+      # <org>/<repo>/<NAME> (repo auto-detected). Each becomes an env var of the same
+      # name, available to later steps in this job. --------------------------------
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@main
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          shared: EXAMPLE_SHARED_SECRET
+          repo: EXAMPLE_REPO_SECRET
+          # aws-region: us-east-1   # optional; secrets account region, default us-east-1
+
+      # To mint a GitHub App token, pass the dedicated reader role inherited from
+      # the caller. Do not fetch the App key through the general secrets reader:
+      # - name: Generate GitHub App Token
+      #   id: app-token
+      #   uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@main
+      #   with:
+      #     role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
+
+      # To assume a WORK role with a fetched ARN, do it in a SEPARATE step after the
+      # fetch (the composite only fetches):
+      # - uses: aws-actions/configure-aws-credentials@v6
+      #   with:
+      #     role-to-assume: ${{ env.SOME_ROLE_ARN }}
+      #     aws-region: us-west-2
+      #     unset-current-credentials: true
+
+      - name: Do the work
+        run: echo "${{ inputs.example_choice_input }} / ${{ inputs.example_optional_input }}"

@@ -1,0 +1,85 @@
+name: Fetch secrets from Secrets Manager
+description: >
+  Assume the central DevX Secrets Manager reader role via GitHub OIDC and fetch
+  secrets into the job environment by name. Author lists bare secret NAMES; this
+  action adds the folder prefix (shared/<NAME> for shared secrets,
+  <org>/<repo>/<NAME> for repo-specific secrets, using the calling repo) and
+  fetches them. Each secret becomes an env var of the same name, available to all
+  later steps in the calling job (env exports from a composite propagate to the job).
+
+inputs:
+  role-arn:
+    description: ARN of the reader role to assume via OIDC.
+    required: true
+  shared:
+    description: >
+      SHARED secret names (identical value across repos). Comma / space / newline
+      separated. Resolved to shared/<NAME>.
+    required: false
+    default: ""
+  repo:
+    description: >
+      REPO-SPECIFIC secret names (value differs per repo). Comma / space / newline
+      separated. Resolved to <github.repository>/<NAME> (the calling repo).
+    required: false
+    default: ""
+  aws-region:
+    description: Region of the central Secrets Manager account.
+    required: false
+    default: us-east-1
+
+runs:
+  using: composite
+  steps:
+    - name: Register role ARN mask
+      shell: bash
+      run: echo "::add-mask::${{ inputs.role-arn }}"
+
+    - name: Configure AWS credentials (central secrets reader)
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        mask-aws-account-id: true
+
+    - name: Build secret-ids list
+      id: build
+      shell: bash
+      env:
+        SHARED_NAMES: ${{ inputs.shared }}
+        REPO_NAMES: ${{ inputs.repo }}
+        CALLER_REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        # Normalize commas/spaces to newlines, drop blanks; build "<NAME>,<folder>/<NAME>".
+        # Alias = the bare NAME, so each secret lands in an env var of that exact name.
+        : > /tmp/secret-ids.txt
+        emit() {
+          local prefix="$1" names="$2"
+          echo "$names" | tr ', ' '\n\n' | while IFS= read -r n; do
+            n="$(echo "$n" | xargs)"        # trim surrounding whitespace
+            [ -z "$n" ] && continue
+            echo "${n},${prefix}/${n}" >> /tmp/secret-ids.txt
+          done
+        }
+        emit "shared" "$SHARED_NAMES"
+        emit "$CALLER_REPO" "$REPO_NAMES"
+
+        if [ ! -s /tmp/secret-ids.txt ]; then
+          echo "::error::fetch-secrets: neither 'shared' nor 'repo' provided any secret names."
+          exit 1
+        fi
+
+        echo "Resolved secret-ids:"
+        sed 's/^/  /' /tmp/secret-ids.txt
+        {
+          echo "ids<<SECRET_IDS_EOF"
+          cat /tmp/secret-ids.txt
+          echo "SECRET_IDS_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Fetch secrets
+      uses: aws-actions/aws-secretsmanager-get-secrets@v2
+      with:
+        secret-ids: ${{ steps.build.outputs.ids }}
+        parse-json-secrets: false

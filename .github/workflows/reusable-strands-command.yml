@@ -1,0 +1,164 @@
+# Reusable workflow: strands-command — runs the Strands agent on /strands comments or manual dispatch.
+# The agent's behavior (model, package, language, paths) lives in each caller's own checked-out files:
+#   - ./.github/actions/strands-action (composite action)
+#   - ./.github/scripts/javascript/process-inputs.cjs
+# actions/checkout here checks out the CALLER repo by default, so these repo-local paths resolve to
+# each consumer's own logic with no branching needed in this workflow.
+# Used by the repos that run strands-command (see coverage matrix).
+#
+# This workflow declares NO workflow_call inputs, so callers never need a `with:` block. The manual
+# workflow_dispatch inputs (issue_id / command / session_id) are read via `inputs.*`,
+# inherited from the caller's triggering event; on comment-triggered runs these values are empty.
+
+name: Reusable - Strands Command
+
+# caller-on:
+#   issue_comment:
+#     types:
+#     - created
+#   pull_request_review_comment:
+#     types:
+#     - created
+#   workflow_dispatch:
+#     inputs:
+#       issue_id:
+#         description: Issue ID to process (can be issue or PR number)
+#         required: true
+#         type: string
+#       command:
+#         description: Strands command to execute
+#         required: false
+#         type: string
+#         default: ''
+#       session_id:
+#         description: Optional session ID to use
+#         required: false
+#         type: string
+#         default: ''
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+      issue_id:
+        description: Issue ID to process (can be issue or PR number)
+        required: true
+        type: string
+      command:
+        description: Strands command to execute
+        required: false
+        type: string
+        default: ''
+      session_id:
+        description: Optional session ID to use
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  strands-agent:
+    # Run only for /strands comments or manual dispatch. github.event_name and
+    # github.event.* are inherited from the caller's real triggering event.
+    if: startsWith(github.event.comment.body, '/strands') || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          repo: AWS_ROLE_ARN, AGENT_SESSIONS_BUCKET
+      # Comment triggers must come from a collaborator with write access; manual
+      # workflow_dispatch runs are trusted and skip the check.
+      - name: Check authorization
+        id: authz
+        if: github.event_name != 'workflow_dispatch'
+        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@feat/reusable-workflows
+        with:
+          subject: ${{ github.event.comment.user.login }}
+          required-permission: write
+      - name: Enforce authorization
+        if: github.event_name != 'workflow_dispatch' && steps.authz.outputs.is-authorized != 'true'
+        run: |
+          echo "❌ User ${{ github.event.comment.user.login }} does not have write access"
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Add strands-running label
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const issueNumber = ${{ inputs.issue_id || github.event.issue.number || github.event.pull_request.number }};
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['strands-running']
+            });
+
+      - name: Process inputs and build prompts
+        id: process-inputs
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const processInputs = require('./.github/scripts/javascript/process-inputs.cjs');
+            const inputs = {
+              issue_id: '${{ inputs.issue_id }}',
+              command: '${{ inputs.command }}',
+              session_id: '${{ inputs.session_id }}'
+            };
+            await processInputs(context, github, core, inputs);
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
+
+      - name: Run Strands Agent
+        # Centralized action hosted in this devtools repo (a `uses: ./` local ref would
+        # resolve against devtools from a reusable anyway, and the caller has no copy).
+        uses: aws/agentcore-devx-devtools/.github/actions/strands-action@feat/reusable-workflows
+        with:
+          prompt: ${{ steps.process-inputs.outputs.prompt }}
+          system_prompt: ${{ steps.process-inputs.outputs.system_prompt }}
+          provider: 'bedrock'
+          model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+          tools: 'strands_tools:shell,retrieve'
+          aws_role_arn: ${{ env.AWS_ROLE_ARN }}
+          aws_region: 'us-west-2'
+          pat_token: ${{ steps.app-token.outputs.token }}
+        env:
+          SESSION_ID: ${{ steps.process-inputs.outputs.session_id }}
+          S3_SESSION_BUCKET: ${{ env.AGENT_SESSIONS_BUCKET }}
+          BRANCH_NAME: ${{ steps.process-inputs.outputs.branch_name }}
+
+      - name: Remove strands-running label
+        if: always()
+        uses: actions/github-script@v9
+        with:
+          script: |
+            try {
+              const issueNumber = ${{ inputs.issue_id || github.event.issue.number || github.event.pull_request.number }};
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                name: 'strands-running'
+              });
+            } catch (error) {
+              console.log('Label removal failed (may not exist):', error.message);
+            }

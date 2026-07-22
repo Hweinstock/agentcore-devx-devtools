@@ -1,0 +1,168 @@
+# Reusable workflow: agent-restricted — an on-demand AI agent (Strands) that operates on the
+# CALLER repo, gated to an allowlist of users. A maintainer dispatches a prompt (e.g. "triage my
+# open PRs", "fix issue #123 and open a PR"); the agent runs with the caller repo checked out and
+# a write-scoped App token, so it can edit files on disk AND act via the GitHub API (issues, PRs,
+# comments), reasoning with a model provider (Bedrock by default, via an assumed AWS role).
+#
+# The single `agent` job: (1) fetch AUTHORIZED_USERS and AWS_ROLE_ARN; (2) the
+# AUTHORIZATION GATE — abort unless github.actor is in AUTHORIZED_USERS (the job wields a write
+# token + AWS role, so it must never run for an arbitrary actor); (3) check out the caller repo;
+# (4) mint a GitHub App token so the agent posts as the App; (5) run strands-action.
+#
+# strands-action + its Python runner are BUNDLED in THIS devtools repo (.github/actions/
+# strands-action) — a `uses: ./…` ref resolves against the reusable's host, not the caller, so the
+# caller needs no strands files. It installs the SDK, assumes the AWS role for Bedrock, and runs
+# agent_runner.py against the caller's workspace. Inputs come from the caller's workflow_dispatch
+# event; the repo is auto-detected (github.repository), not passed in.
+
+
+name: Reusable - Agent Restricted
+
+# Restricted access: only authorized users can trigger this (via the caller's
+# workflow_dispatch). Authorization is enforced inside the `agent` job.
+
+# caller-on:
+#   workflow_dispatch:
+#     inputs:
+#       prompt:
+#         description: Prompt for the agent
+#         required: true
+#         default: What are my active pull requests?
+#         type: string
+#       system_prompt:
+#         description: System prompt
+#         required: false
+#         type: string
+#       provider:
+#         description: Provider
+#         default: bedrock
+#         required: false
+#         type: choice
+#         options:
+#         - bedrock
+#         - github
+#         - openai
+#         - anthropic
+#       model:
+#         description: Model ID (e.g., us.anthropic.claude-sonnet-4-5-20250929-v1:0)
+#         required: false
+#         default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+#         type: string
+#       max_tokens:
+#         description: Maximum tokens for model response
+#         required: false
+#         default: '10000'
+#         type: string
+#       tools:
+#         description: Tool config (e.g., strands_tools:shell;strands_action:use_github)
+#         required: false
+#         default: strands_tools:shell;tools:use_github
+#         type: string
+#       agent_runner:
+#         description: Custom agent runner URL
+#         required: false
+#         type: string
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+      prompt:
+        description: Prompt for the agent
+        required: true
+        type: string
+        default: "What are my active pull requests?"
+      system_prompt:
+        description: System prompt
+        required: false
+        type: string
+      provider:
+        # options: ["bedrock", "github", "openai", "anthropic"]
+        description: Provider
+        required: false
+        type: string
+        default: "bedrock"
+      model:
+        description: "Model ID (e.g., us.anthropic.claude-sonnet-4-5-20250929-v1:0)"
+        required: false
+        type: string
+        default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+      max_tokens:
+        description: Maximum tokens for model response
+        required: false
+        type: string
+        default: "10000"
+      tools:
+        description: "Tool config (e.g., strands_tools:shell;strands_action:use_github)"
+        required: false
+        type: string
+        default: "strands_tools:shell;tools:use_github"
+      agent_runner:
+        description: Custom agent runner URL
+        required: false
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  agent:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          repo: AUTHORIZED_USERS, AWS_ROLE_ARN
+      - name: Check authorization
+        id: authz
+        uses: aws/agentcore-devx-devtools/.github/actions/check-authorized-user@feat/reusable-workflows
+        with:
+          subject: ${{ github.actor }}
+          authorized-users: ${{ env.AUTHORIZED_USERS }}
+      - name: Enforce authorization
+        if: steps.authz.outputs.is-authorized != 'true'
+        run: |
+          echo "❌ User ${{ github.actor }} is NOT authorized"
+          exit 1
+
+      # Check out the CALLER repo (not the devtools host) so the agent operates on the consumer's
+      # own files in the workspace. The strands-action composite and its runner scripts are NOT
+      # taken from here — they're bundled with the centrally-hosted action in the devtools repo.
+      - name: Checkout caller repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
+
+      - name: Run Strands Agent
+        # Centralized action hosted in this devtools repo (a `uses: ./` local ref would
+        # resolve against devtools from a reusable anyway, and the caller has no copy).
+        uses: aws/agentcore-devx-devtools/.github/actions/strands-action@feat/reusable-workflows
+        with:
+          prompt: ${{ inputs.prompt || 'What are my active pull requests?' }}
+          provider: ${{ inputs.provider || 'bedrock' }}
+          model: ${{ inputs.model || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0' }}
+          max_tokens: ${{ inputs.max_tokens || '10000' }}
+          system_prompt: ${{ inputs.system_prompt }}
+          tools: ${{ inputs.tools || 'strands_tools:shell;tools:use_github' }}
+          agent_runner: ${{ inputs.agent_runner }}
+          aws_role_arn: ${{ env.AWS_ROLE_ARN }}
+          aws_region: 'us-west-2'
+          pat_token: ${{ steps.app-token.outputs.token }}
+        env:
+          STRANDS_TOOLS_DIRECTORY: 'true'

@@ -1,0 +1,63 @@
+# Reusable workflow: pr-labeler — auto-labels PRs by changed file paths via actions/labeler.
+# No caller inputs: the labeler config path is resolved after checkout from
+# `.github/labeler.yml` (or `.yaml`). Consumers use the v5+ `changed-files:` schema.
+# Used by the repos that run pr-labeler (see coverage matrix).
+#
+# Security notes:
+#   * pull_request_target safety: this workflow does NOT check out or execute any
+#     PR-author-controlled code from the head ref. `actions/checkout` (used only to
+#     read the repo's own trusted `.github/labeler.yml`) checks out the BASE ref by
+#     default under pull_request_target, never the untrusted head. The labeler step
+#     only adds labels based on changed file paths — it runs no PR code.
+#   * Least-privilege permissions: contents:read + pull-requests:write only.
+#   * repo-token uses the inherited ${{ secrets.GITHUB_TOKEN }} (caller `secrets: inherit`).
+
+name: Reusable - PR Labeler
+
+# caller-on:
+#   pull_request_target:
+#     types:
+#     - opened
+#     - synchronize
+#     - reopened
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Auto-label PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Check out the BASE repo (trusted) so we can read the labeler config and
+      # let actions/labeler resolve it from the workspace. Under
+      # pull_request_target this checks out the base ref, NOT the untrusted PR head.
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Resolve the labeler config path (consumers use the v5+ `changed-files:` schema).
+      - name: Detect labeler config
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG=".github/labeler.yml"
+          if [ -f .github/labeler.yaml ]; then
+            CONFIG=".github/labeler.yaml"
+          fi
+          echo "Using labeler config: $CONFIG"
+          echo "config-path=$CONFIG" >> "$GITHUB_OUTPUT"
+
+      # Mirrors the live `pr-labeler.yml`: actions/labeler@v6 + repo-token.
+      - name: Label by changed files (labeler v6)
+        uses: actions/labeler@v6
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: ${{ steps.detect.outputs.config-path }}

@@ -1,0 +1,78 @@
+# TEST reusable workflow: slack-open-prs-notification (pair of reusable-slack-open-prs-notification.yml)
+#
+# Mirrors the reusable: the secret fetch and the "Get open PRs" step (queries the
+# open PRs and builds the digest message) run VERBATIM — they only read the API.
+# STUBBED (outward): the Slack webhook POST via slackapi/slack-github-action.
+# Safe on a dev branch.
+name: "TEST - Slack Open PRs Notification"
+
+# caller-on:
+#   push:
+#     branches:
+#     - feat/caller-workflows
+#   schedule:
+#   - cron: 0 13 * * *
+#   workflow_dispatch: null
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+    # owner/repo are derived from ${{ github.repository }};
+    # the Slack webhook is the inherited secret SLACK_OPEN_PRS_WEBHOOK_URL.
+
+permissions:
+  pull-requests: read
+  id-token: write
+
+jobs:
+  notify-slack:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          shared: SLACK_OPEN_PRS_WEBHOOK_URL
+      - name: Get open PRs
+        id: open-prs
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+            });
+
+            const count = prs.length;
+
+            // Format each PR with plain text and bare URL (Slack auto-links URLs)
+            const prList = prs.map(pr =>
+              `• #${pr.number} - ${pr.title} (by ${pr.user.login})\n  ${pr.html_url}`
+            ).join('\n');
+
+            core.setOutput('count', count);
+
+            // Use GITHUB_OUTPUT delimiter for multiline support
+            const fs = require('fs');
+            fs.appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              `pr_list<<PRLIST_EOF\n${prList}\nPRLIST_EOF\n`
+            );
+
+      # STUB: real workflow posts the open-PRs digest to Slack via
+      # slackapi/slack-github-action (webhook POST). Outward — stubbed here.
+      # The digest was computed for real in the step above (steps.open-prs.outputs.*).
+      - name: Send open PRs summary to Slack
+        run: |
+          echo "ℹ️  (stub) would: POST open-PRs digest to Slack webhook (webhook-trigger)"
+          echo "ℹ️  (stub) pr_count=${{ steps.open-prs.outputs.count }} for ${{ github.repository }}"
+          echo "ℹ️  (stub) pr_list follows:"
+          cat <<'PRLIST_EOF'
+          ${{ steps.open-prs.outputs.pr_list }}
+          PRLIST_EOF

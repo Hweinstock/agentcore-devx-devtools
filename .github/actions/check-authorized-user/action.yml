@@ -1,0 +1,38 @@
+name: Check authorized user
+description: >
+  Gate on an allowlist: is <subject> present in <authorized-users>? Emits
+  is-authorized ('true' | 'false'). The caller extracts the login to check
+  (PR author, comment author, github.actor, ...) and passes it as `subject`,
+  so this action stays agnostic to the triggering event.
+
+inputs:
+  subject:
+    description: The login to authorize (e.g. the PR author). Caller extracts it from its event.
+    required: true
+  authorized-users:
+    description: Comma-separated allowlist of logins (e.g. from secrets.AUTHORIZED_USERS).
+    required: true
+
+outputs:
+  is-authorized:
+    description: "'true' if subject is in the allowlist, else 'false'."
+    value: ${{ steps.check.outputs.is-authorized }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check authorization
+      id: check
+      shell: bash
+      env:
+        SUBJECT: ${{ inputs.subject }}
+        AUTHORIZED_USERS: ${{ inputs.authorized-users }}
+      run: |
+        set -euo pipefail
+        if [[ ",${AUTHORIZED_USERS}," == *",${SUBJECT},"* ]]; then
+          echo "✅ ${SUBJECT} is authorized"
+          echo "is-authorized=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "⏭️ ${SUBJECT} is not in the allowlist — not authorized"
+          echo "is-authorized=false" >> "$GITHUB_OUTPUT"
+        fi

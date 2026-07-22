@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / TypeScript tooling
+node_modules/
+npm-debug.log*
+*.tsbuildinfo
+
+# Secrets / local env (never commit — this repo is public)
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store

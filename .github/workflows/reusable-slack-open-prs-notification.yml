@@ -1,0 +1,74 @@
+# Reusable workflow: slack-open-prs-notification — posts a daily summary of the
+# caller repo's open pull requests to Slack.
+# owner/repo are derived at runtime from ${{ github.repository }}; the caller
+# owns the schedule/workflow_dispatch triggers and inherits the Slack webhook
+# secret SLACK_OPEN_PRS_WEBHOOK_URL.
+
+name: Reusable - Slack Open PRs Notification
+
+# caller-on:
+#   schedule:
+#   - cron: 0 13 * * *
+#   workflow_dispatch: null
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+    # owner/repo are derived from ${{ github.repository }};
+    # the Slack webhook is the inherited secret SLACK_OPEN_PRS_WEBHOOK_URL.
+
+permissions:
+  pull-requests: read
+  id-token: write
+
+jobs:
+  notify-slack:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          shared: SLACK_OPEN_PRS_WEBHOOK_URL
+      - name: Get open PRs
+        id: open-prs
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+            });
+
+            const count = prs.length;
+
+            // Format each PR with plain text and bare URL (Slack auto-links URLs)
+            const prList = prs.map(pr =>
+              `• #${pr.number} - ${pr.title} (by ${pr.user.login})\n  ${pr.html_url}`
+            ).join('\n');
+
+            core.setOutput('count', count);
+
+            // Use GITHUB_OUTPUT delimiter for multiline support
+            const fs = require('fs');
+            fs.appendFileSync(
+              process.env.GITHUB_OUTPUT,
+              `pr_list<<PRLIST_EOF\n${prList}\nPRLIST_EOF\n`
+            );
+
+      - name: Send open PRs summary to Slack
+        uses: slackapi/slack-github-action@v3.0.3
+        with:
+          webhook: ${{ env.SLACK_OPEN_PRS_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
+          payload: |
+            pr_count: "${{ steps.open-prs.outputs.count }}"
+            pr_list: ${{ toJSON(steps.open-prs.outputs.pr_list) }}
+            repository: "${{ github.repository }}"
+            repository_url: "https://github.com/${{ github.repository }}/pulls"

@@ -1,0 +1,49 @@
+# =============================================================================
+# CALLER WORKFLOW TEMPLATE — copy into a repo's .github/workflows/<name>.yml
+# =============================================================================
+# A caller is the thin per-repo file that invokes a shared reusable. You author it
+# BY HAND from this template: set the triggers, point `uses:` at the reusable, forward
+# any inputs, and keep `secrets: inherit`. Triggers are uniform across repos.
+# No secrets live here (the reusable fetches them); no repository_name (the reusable
+# auto-detects github.repository).
+
+name: <Name>
+
+# ----- [1] TRIGGERS: how this caller fires. Uniform across repos. Mirror the reusable's
+# workflow_call.inputs into workflow_dispatch here. workflow_dispatch supports
+# `type: choice`; re-declare any string input the reusable documented with a
+# `# options: [...]` hint as a choice dropdown with those options.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      example_choice_input:
+        description: What this input controls
+        required: true
+        type: choice
+        options: [patch, minor, major]
+
+# ----- [2] PERMISSIONS: must cover every write scope the reusable needs — the union of
+# its top-level AND job-level `permissions:` — plus a `contents` floor. A reusable's own
+# `permissions:` can only NARROW the caller's token, never grant it, so scopes such as
+# `id-token: write` (secret fetch / OIDC) or `security-events: write` (CodeQL) MUST be
+# granted here or the reusable's jobs fail (especially under a read-only repo default).
+# Contents is `read`, or `write` if the reusable needs it. The example below fits a
+# reusable that fetches secrets (id-token) and comments on PRs; a read-only reusable
+# gets just `contents: read`.
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  call:
+    # Points at the exact reusable file. Pi version @ref
+    uses: aws/agentcore-devx-devtools/.github/workflows/reusable-<name>.yml@main
+    # Present only if the reusable declares inputs; forward each one:
+    with:
+      example_choice_input: ${{ inputs.example_choice_input }}
+
+    secrets: inherit  # Always required: forwards the WORKFLOW_SECRETS_READER_ROLE_ARN secret from caller repo to the reusable so its fetch-secrets step works.

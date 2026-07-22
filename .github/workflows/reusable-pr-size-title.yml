@@ -1,0 +1,178 @@
+# Reusable workflow: pr-size-title — two independent PR checks in one workflow:
+#   * label-size        — computes a size/* label from the PR's changed-line count
+#                         (excluding lockfiles/snapshots) and applies it.
+#   * validate-pr-title — validates the PR title follows conventional-commit rules.
+# Both run on pull_request_target (fork PRs get label/status write access; neither job
+# checks out or executes untrusted PR code — they only read PR metadata via the API).
+# The two jobs are independent and run in parallel; each carries its own least-privilege
+# permissions. No inputs or config: title rules are identical across consumers and size is
+# computed from the diff. GITHUB_TOKEN is inherited via the caller's `secrets: inherit`.
+#
+# The caller-on `types` are the UNION of both checks' needs: `edited` is required so a title
+# edit re-validates; the size job simply re-runs harmlessly (idempotent relabel) on edits.
+
+name: Reusable - PR Size Title
+
+# caller-on:
+#   pull_request_target:
+#     branches:
+#     - main
+#     - feat/**
+#     types:
+#     - opened
+#     - edited
+#     - synchronize
+#     - reopened
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+    # Title rules are fixed and size is computed from the diff. GITHUB_TOKEN is
+    # inherited via the caller's `secrets: inherit`.
+
+# Floor for the workflow; each job narrows to its own least privilege below.
+permissions:
+  contents: read
+
+jobs:
+  label-size:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Calculate PR size and apply label
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const { owner, repo } = context.repo;
+
+            // Fetch file-level stats so we can exclude generated/lock files
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: prNumber,
+              per_page: 100
+            });
+
+            const EXCLUDED = [
+              /package-lock\.json$/,
+              /yarn\.lock$/,
+              /pnpm-lock\.yaml$/,
+              /\.snap$/
+            ];
+
+            let additions = 0;
+            let deletions = 0;
+            for (const file of files) {
+              if (EXCLUDED.some(re => re.test(file.filename))) continue;
+              additions += file.additions;
+              deletions += file.deletions;
+            }
+            const totalChanges = additions + deletions;
+
+            // Remove existing size labels (catch 404 in case of race)
+            const labels = await github.rest.issues.listLabelsOnIssue({
+              owner, repo, issue_number: prNumber
+            });
+
+            for (const label of labels.data) {
+              if (label.name.startsWith('size/')) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner, repo, issue_number: prNumber, name: label.name
+                  });
+                } catch (e) {
+                  if (e.status !== 404) throw e;
+                }
+              }
+            }
+
+            // Determine size label
+            let sizeLabel;
+            if (totalChanges <= 20) sizeLabel = 'size/xs';
+            else if (totalChanges <= 100) sizeLabel = 'size/s';
+            else if (totalChanges <= 500) sizeLabel = 'size/m';
+            else if (totalChanges <= 1000) sizeLabel = 'size/l';
+            else sizeLabel = 'size/xl';
+
+            // Ensure the label exists before applying it
+            const LABEL_COLORS = {
+              'size/xs': '3CBF00',
+              'size/s':  '5D9801',
+              'size/m':  'FBCA04',
+              'size/l':  'E67409',
+              'size/xl': 'D93F0B'
+            };
+
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: sizeLabel });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner, repo,
+                  name: sizeLabel,
+                  color: LABEL_COLORS[sizeLabel],
+                  description: `PR size: ${sizeLabel.split('/')[1].toUpperCase()}`
+                });
+              } else {
+                throw e;
+              }
+            }
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: prNumber, labels: [sizeLabel]
+            });
+
+            core.info(`PR has ${totalChanges} changed lines (excluding lockfiles/snapshots) → ${sizeLabel}`);
+
+            if (sizeLabel === 'size/xl') {
+              core.warning(`PR is large (${totalChanges} lines). Consider splitting into smaller PRs.`);
+            }
+
+  validate-pr-title:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Only run for pull_request / pull_request_target events inherited from the
+    # caller. The semantic-PR action requires PR event context to read the title.
+    if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'pull_request' }}
+    permissions:
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Types aligned with this repo's commit conventions (see AGENTS.md)
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          requireScope: false
+          # Repo convention: lowercase subjects (e.g., "feat: add new command")
+          subjectPattern: ^[a-z].+$
+          subjectPatternError: |
+            The subject "{subject}" found in the pull request title "{title}"
+            must start with a lowercase letter.
+            Example: "feat: add deploy command"
+          # Validate the commit message when a PR has a single commit, since
+          # GitHub suggests using it as the merge commit message on squash-merge
+          validateSingleCommit: true
+          validateSingleCommitMatchesPrTitle: true
+          # Skip validation for bot/dependency PRs
+          ignoreLabels: |
+            bot
+            dependencies

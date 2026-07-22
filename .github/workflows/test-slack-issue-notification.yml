@@ -1,0 +1,232 @@
+# TEST reusable workflow: github-slack-notifications (pair of reusable-github-slack-notifications.yml)
+#
+# Mirrors the reusable as faithfully as possible: both jobs, all event-gating `if:`
+# conditions, secret fetch, the commenter-permission check, existing-redirect-comment
+# dedup, issues-new URL resolution, and PR-state computation all run VERBATIM.
+# STUBBED (outward/irreversible): the redirect PR comment (github-script createComment)
+# and both Slack webhook POSTs (slackapi/slack-github-action). Safe on a dev branch.
+name: "TEST - GitHub Slack Notifications"
+
+# caller-on:
+#   push:
+#     branches:
+#     - feat/caller-workflows
+#   issues:
+#     types:
+#     - opened
+#   issue_comment:
+#     types:
+#     - created
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+
+jobs:
+  notify-issue-opened:
+    if: github.event_name == 'issues'
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    permissions:
+      id-token: write
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          shared: SLACK_WEBHOOK_URL
+      # STUB: real workflow sends the issue-opened payload to Slack via
+      # slackapi/slack-github-action (webhook POST). Outward — stubbed here.
+      # The env: block below (the computed payload fields) is preserved verbatim.
+      - name: Send issue details to Slack
+        # Attacker-controlled fields are passed through env: rather than
+        # interpolated into the YAML payload, to prevent workflow injection.
+        # For issue_opened, the issue_* fields carry the data and the
+        # pr_*/comment_* fields are empty.
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CREATED_AT: ${{ github.event.issue.created_at }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          LABELS: ${{ join(github.event.issue.labels.*.name, ', ') }}
+        run: |
+          echo "ℹ️  (stub) would: POST issue_opened payload to Slack webhook (webhook-trigger)"
+          echo "ℹ️  (stub) issue #${ISSUE_NUMBER} '${ISSUE_TITLE}' by ${ISSUE_AUTHOR} in ${REPOSITORY}"
+
+  closed-pr-comment-redirect:
+    # Only fire on comments left on PRs (issue_comment fires for issues too)
+    # that are already closed, and skip comments left by bots.
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request != null && github.event.issue.state ==
+      'closed' && github.event.comment.user.type != 'Bot'
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    permissions:
+      pull-requests: write
+      issues: read
+      id-token: write
+    # Serialize per-PR so the marker-comment dedup is race-free (otherwise two
+    # rapid-fire comments could both see "no marker" and both post a redirect).
+    # cancel-in-progress is false so the second run still executes after the
+    # first finishes -- we want to evaluate dedup against the just-posted marker.
+    concurrency:
+      group: closed-pr-comment-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          shared: SLACK_WEBHOOK_URL
+      # A maintainer's comment is left alone; only non-maintainers get the redirect.
+      # check-collaborator never throws (a failed/404 lookup resolves to not-authorized),
+      # so external users on private repos correctly fall through to skip=false.
+      - name: Check commenter permission
+        id: authz
+        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@feat/reusable-workflows
+        with:
+          subject: ${{ github.event.comment.user.login }}
+          required-permission: write
+      - name: Derive skip
+        id: perm
+        run: echo "skip=${{ steps.authz.outputs.is-authorized }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check for existing redirect comment
+        id: existing
+        if: steps.perm.outputs.skip != 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            // Marker we embed in our reply so we don't double-post on the same PR.
+            const marker = '<!-- closed-pr-comment-redirect -->';
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                per_page: 100,
+              }
+            );
+            const alreadyPosted = comments.some(c => c.body && c.body.includes(marker));
+            core.setOutput('already_posted', String(alreadyPosted));
+
+      - name: Resolve "open a new issue" URL
+        id: issues_url
+        if: steps.perm.outputs.skip != 'true' && steps.existing.outputs.already_posted != 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            // Repos with issue templates link to /issues/new/choose (the
+            // chooser); repos without templates have no chooser and must link
+            // straight to /issues/new. Detect by listing the contents of
+            // .github/ISSUE_TEMPLATE -- a populated template dir (any entry
+            // other than the bare config.yml) means a chooser exists.
+            // Default to /issues/new/choose to match the historical behavior
+            // of every consumer's standalone workflow if detection is
+            // inconclusive.
+            const base = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            let useChooser = true;
+            try {
+              const { data } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/ISSUE_TEMPLATE',
+              });
+              const entries = Array.isArray(data) ? data : [data];
+              const templates = entries.filter(e => {
+                const name = (e.name || '').toLowerCase();
+                return e.type === 'file' && name !== 'config.yml' && name !== 'config.yaml';
+              });
+              useChooser = templates.length > 0;
+            } catch (err) {
+              // 404 == no ISSUE_TEMPLATE directory; fall back to the chooser
+              // URL to preserve the prior hardcoded behavior.
+              core.info(`Issue template lookup inconclusive: ${err.message}. Defaulting to /issues/new/choose.`);
+              useChooser = true;
+            }
+            const url = useChooser ? `${base}/issues/new/choose` : `${base}/issues/new`;
+            core.setOutput('url', url);
+            core.info(`Resolved issues-new URL: ${url}`);
+
+      # STUB: real workflow posts the redirect bot reply on the closed PR via
+      # github-script (issues.createComment). Outward — stubbed here. The body
+      # is still computed so the message content is exercised.
+      - name: Post redirect comment
+        if: steps.perm.outputs.skip != 'true' && steps.existing.outputs.already_posted != 'true'
+        # The Slack notification is the load-bearing part of this job. If
+        # posting the bot reply fails (rate limit, transient error), don't
+        # block the Slack notification.
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          ISSUES_NEW_URL: ${{ steps.issues_url.outputs.url }}
+        with:
+          script: |
+            const commenter = context.payload.comment.user.login;
+            const issuesNewUrl = process.env.ISSUES_NEW_URL;
+            const body = [
+              '<!-- closed-pr-comment-redirect -->',
+              '',
+              `Thanks for the report, @${commenter} — feedback like this is exactly`,
+              "how we catch the things we missed. Because this PR is already",
+              "closed, the team won't see follow-up comments here.",
+              '',
+              'Would you mind opening a new issue so we can track it properly?',
+              issuesNewUrl,
+              '',
+              'If this is a security issue, please report it privately via',
+              'https://aws.amazon.com/security/vulnerability-reporting/ instead',
+              'of a public issue.',
+            ].join('\n');
+
+            console.log('ℹ️  (stub) would: issues.createComment redirect on PR #' + context.payload.issue.number);
+            console.log('ℹ️  (stub) computed redirect body:\n' + body);
+
+      - name: Compute PR state
+        id: pr_state
+        if: steps.perm.outputs.skip != 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            // PRs surface as `issue` events; merged_at is null when closed-not-merged.
+            const mergedAt = context.payload.issue.pull_request &&
+              context.payload.issue.pull_request.merged_at;
+            core.setOutput('state', mergedAt ? 'merged' : 'closed');
+
+      # STUB: real workflow notifies oncall of the closed-PR comment via the Slack
+      # webhook (slackapi/slack-github-action). Outward — stubbed here. All payload
+      # env: fields are preserved verbatim.
+      - name: Notify Slack
+        # Notify oncall only on the FIRST external comment per PR (gated by
+        # already_posted). Subsequent comments on the same PR don't notify --
+        # the redirect comment has already directed the commenter to open an
+        # issue, and issues notify oncall via the issue path. This bounds
+        # notification volume regardless of how chatty a thread becomes.
+        if: steps.perm.outputs.skip != 'true' && steps.existing.outputs.already_posted != 'true'
+        # Attacker-controlled fields are passed through env: rather than
+        # interpolated into the YAML payload, to prevent workflow injection.
+        # For closed-PR comments, the issue_* fields are empty (this isn't
+        # an issue) and the pr_*/comment_* fields carry the real data.
+        env:
+          REPOSITORY: ${{ github.repository }}
+          CREATED_AT: ${{ github.event.comment.created_at }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_TITLE: ${{ github.event.issue.title }}
+          PR_URL: ${{ github.event.issue.html_url }}
+          PR_AUTHOR: ${{ github.event.issue.user.login }}
+          PR_CLOSED_AT: ${{ github.event.issue.closed_at }}
+          PR_MERGED_AT: ${{ github.event.issue.pull_request.merged_at }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          echo "ℹ️  (stub) would: POST closed_pr_comment payload to Slack webhook (webhook-trigger)"
+          echo "ℹ️  (stub) PR #${PR_NUMBER} state=${{ steps.pr_state.outputs.state }} comment by ${COMMENT_AUTHOR} in ${REPOSITORY}"
