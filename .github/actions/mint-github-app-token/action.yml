@@ -7,6 +7,12 @@ inputs:
   role-arn:
     description: ARN of the dedicated GitHub App token-minting role.
     required: true
+  owner:
+    description: >
+      GitHub App installation owner. When omitted, the token is scoped to the
+      current repository.
+    required: false
+    default: ""
 
 outputs:
   token:
@@ -70,3 +76,4 @@ runs:
       with:
         app-id: "3637953"
         private-key: ${{ steps.private-key.outputs.value }}
+        owner: ${{ inputs.owner }}
