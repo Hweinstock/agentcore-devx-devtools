@@ -46,7 +46,7 @@ jobs:
     steps:
       - name: Generate GitHub App Token
         id: app-token
-        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
 

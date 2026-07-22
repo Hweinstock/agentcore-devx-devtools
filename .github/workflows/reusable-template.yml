@@ -40,7 +40,7 @@ jobs:
       # <org>/<repo>/<NAME> (repo auto-detected). Each becomes an env var of the same
       # name, available to later steps in this job. --------------------------------
       - name: Fetch secrets from Secrets Manager
-        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@main
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
           shared: EXAMPLE_SHARED_SECRET
@@ -51,7 +51,7 @@ jobs:
       # the caller. Do not fetch the App key through the general secrets reader:
       # - name: Generate GitHub App Token
       #   id: app-token
-      #   uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@main
+      #   uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
       #   with:
       #     role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
 

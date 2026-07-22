@@ -91,7 +91,7 @@ jobs:
       - name: Check authorization
         id: auth
         if: github.event_name == 'pull_request_target'
-        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           subject: ${{ steps.subject.outputs.login }}
           required-permission: write
@@ -110,13 +110,13 @@ jobs:
       AWS_REGION: us-west-2
     steps:
       - name: Fetch secrets from Secrets Manager
-        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
           shared: BEDROCK_SECURITY_REVIEW_ROLE_ARN
       - name: Generate GitHub App token
         id: app-token
-        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
 

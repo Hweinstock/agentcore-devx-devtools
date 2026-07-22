@@ -35,7 +35,7 @@ jobs:
       id-token: write
     steps:
       - name: Fetch secrets from Secrets Manager
-        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
           shared: SLACK_WEBHOOK_URL
@@ -80,7 +80,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Fetch secrets from Secrets Manager
-        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
           shared: SLACK_WEBHOOK_URL
@@ -89,7 +89,7 @@ jobs:
       # so external users on private repos correctly fall through to skip=false.
       - name: Check commenter permission
         id: authz
-        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           subject: ${{ github.event.comment.user.login }}
           required-permission: write

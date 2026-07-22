@@ -38,7 +38,7 @@ jobs:
       branches: ${{ steps.cfg.outputs.branches }}
     steps:
       - name: Fetch secrets from Secrets Manager
-        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
           shared: CLI_PRIVATE_REPO_NAME SDK_PYTHON_PRIVATE_REPO_NAME SDK_TS_PRIVATE_REPO_NAME
@@ -86,7 +86,7 @@ jobs:
     steps:
       - name: Generate GitHub App Token
         id: app-token
-        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@feat/reusable-workflows
+        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
         with:
           role-arn: ${{ secrets.GITHUB_APP_TOKEN_MINTING_ROLE_ARN }}
 
