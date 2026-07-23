@@ -116,9 +116,10 @@ jobs:
           shared: BEDROCK_SECURITY_REVIEW_ROLE_ARN
       - name: Generate GitHub App token
         id: app-token
-        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
+        uses: actions/create-github-app-token@v3
         with:
-          role-arn: ${{ secrets.GITHUBAPPTOKENMINTINGROLE }}
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Resolve PR
         id: pr

@@ -40,8 +40,8 @@ permissions:
 
 jobs:
   call:
-    # Points at the exact reusable file. Pi version @ref
-    uses: aws/agentcore-devx-devtools/.github/workflows/reusable-<name>.yml@main
+    # Points at the exact reusable file. Pi version @commit-SHA
+    uses: aws/agentcore-devx-devtools/.github/workflows/reusable-<name>.yml@commit-SHA
     # Present only if the reusable declares inputs; forward each one:
     with:
       example_choice_input: ${{ inputs.example_choice_input }}

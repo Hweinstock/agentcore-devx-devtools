@@ -136,14 +136,15 @@ jobs:
 
       - name: Generate GitHub App Token
         id: app-token
-        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
+        uses: actions/create-github-app-token@v3
         with:
-          role-arn: ${{ secrets.GITHUBAPPTOKENMINTINGROLE }}
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       # Construct the effective agent-harness config exactly as the reusable resolves it
       # (the same `${{ inputs.X || '<historical default>' }}` fallbacks that are fed to
       # the strands-action composite `with:` block). This is pure computation — no agent
-      # is run — so we can assert every knob resolves and the App token / role are wired.
+      # is run — so we can assert every knob resolves and the App token and fetched AWS role are wired.
       - name: Build effective agent config
         id: agent-config
         env:

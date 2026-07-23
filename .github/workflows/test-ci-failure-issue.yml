@@ -38,7 +38,6 @@ jobs:
     if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.head_branch == 'main' }}
     permissions:
       issues: write
-      id-token: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -47,9 +46,10 @@ jobs:
 
       - name: Generate GitHub App Token
         id: app-token
-        uses: aws/agentcore-devx-devtools/.github/actions/mint-github-app-token@31aa3b031a86664e29861d68956e44b07cf21a74
+        uses: actions/create-github-app-token@v3
         with:
-          role-arn: ${{ secrets.GITHUBAPPTOKENMINTINGROLE }}
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       # STUB: the real workflow runs `npx tsx .github/scripts/create-failure-issue.ts`,
       # which OPENS a GitHub issue on the caller repo. Outward + creates a persistent
