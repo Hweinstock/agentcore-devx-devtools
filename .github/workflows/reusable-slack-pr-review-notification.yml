@@ -67,19 +67,29 @@ jobs:
         with:
           script: |
             // github-login -> Slack member ID, from the SLACK_PR_REVIEW_USER_MAP
-            // JSON secret. A bad/absent value degrades to {} -> plain "@login".
+            // JSON secret. The `mentions` output is a COMMA-SEPARATED list of raw
+            // Slack IDs (e.g. "U03...,U05...") to feed a Person-type variable in
+            // the Slack workflow — that renders a real notifying pill. An unmapped
+            // login has no ID to tag, so it is dropped (and warned), never faked.
             let SLACK = {};
             try { SLACK = JSON.parse(process.env.USER_MAP || "{}"); }
             catch (e) { core.warning(`SLACK_PR_REVIEW_USER_MAP is not valid JSON: ${e.message}`); }
-            const at = (login) =>
-              !login ? "" : (SLACK[login] ? `<@${SLACK[login]}>` : `@${login}`);
+            const idsFor = (logins) => {
+              const ids = [];
+              for (const l of logins) {
+                if (!l) continue;
+                if (SLACK[l]) ids.push(SLACK[l]);
+                else core.warning(`No Slack ID mapped for GitHub login "${l}" — not tagged.`);
+              }
+              return [...new Set(ids)].join(",");
+            };
 
             const ev = context.eventName;
             const p = context.payload;
             const pr = p.pull_request;
             const author = pr.user.login;
 
-            let eventType = "", actor = "", reviewState = "", mentions = "", send = false;
+            let eventType = "", actor = "", reviewState = "", mainMention = "", reviewerIds = [], send = false;
 
             if (ev === "pull_request" && p.action === "review_requested") {
               // requested_reviewer is absent for team requests — only ping individuals.
@@ -87,17 +97,20 @@ jobs:
               if (reviewer) {
                 eventType = "review_requested";
                 actor = author;
-                mentions = at(reviewer);
+                mainMention = idsFor([reviewer]);
                 send = true;
               }
             } else if (ev === "pull_request_review" && p.action === "submitted") {
               eventType = "review_submitted";
               actor = p.review.user.login;
               reviewState = p.review.state; // approved | changes_requested | commented
-              mentions = at(author);
+              mainMention = idsFor([author]);
               send = actor !== author; // don't ping a self-review
             } else if (ev === "pull_request" && p.action === "synchronize") {
-              // New revision pushed: gather everyone who already reviewed or commented.
+              // New revision pushed: ping every reviewer on the PR — those still
+              // pending (requested but haven't acted) PLUS everyone who already
+              // reviewed or commented. requested_reviewers is on the payload (no
+              // API call); reviews + comments need two paginated reads.
               const { owner, repo } = context.repo;
               const [reviews, comments] = await Promise.all([
                 github.paginate(github.rest.pulls.listReviews,
@@ -106,14 +119,21 @@ jobs:
                   { owner, repo, issue_number: pr.number, per_page: 100 }),
               ]);
               const logins = new Set(
-                [...reviews.map(r => r.user && r.user.login),
+                [...(pr.requested_reviewers || []).map(u => u && u.login),
+                 ...reviews.map(r => r.user && r.user.login),
                  ...comments.map(c => c.user && c.user.login)]
                   .filter(l => l && l !== author)
               );
-              if (logins.size) {
+              const allIds = idsFor([...logins]).split(",").filter(Boolean);
+              if (allIds.length) {
+                // Slack Person vars hold one user each, so we expose up to 5
+                // (mention_1..mention_5). A 6th+ reviewer is dropped, not silent.
+                if (allIds.length > 5) {
+                  core.warning(`${allIds.length} reviewers to ping; only the first 5 fit mention_1..5.`);
+                }
+                reviewerIds = allIds.slice(0, 5);
                 eventType = "branch_updated";
                 actor = author;
-                mentions = [...logins].map(at).join(" ");
                 send = true;
               }
             }
@@ -122,7 +142,19 @@ jobs:
             core.setOutput("event_type", eventType);
             core.setOutput("actor", actor);
             core.setOutput("review_state", reviewState);
-            core.setOutput("mentions", mentions);
+            // Slack Person vars are REQUIRED and reject empty strings, so every
+            // output must carry a valid Slack ID. We pad unused slots with a
+            // filler ID; Slack dedupes repeated mentions, so a padded slot adds
+            // no visible pill. Filler = the first available real ID on this
+            // event, else a configured FALLBACK (a bot/self ID that's harmless
+            // to "mention" invisibly).
+            const FALLBACK = SLACK.jariy17 || Object.values(SLACK)[0] || "";
+            const filler = mainMention || reviewerIds[0] || FALLBACK;
+
+            core.setOutput("main_mention", mainMention || filler);
+            for (let i = 0; i < 5; i++) {
+              core.setOutput(`mention_${i + 1}`, reviewerIds[i] || filler);
+            }
 
       - name: Send review notification to Slack
         if: steps.meta.outputs.send == 'true'
@@ -143,7 +175,11 @@ jobs:
             pr_number: "${{ github.event.pull_request.number }}"
             pr_title: ${{ toJSON(env.PR_TITLE) }}
             pr_url: "${{ github.event.pull_request.html_url }}"
-            pr_author: "${{ github.event.pull_request.user.login }}"
             actor: "${{ steps.meta.outputs.actor }}"
             review_state: "${{ steps.meta.outputs.review_state }}"
-            mentions: ${{ toJSON(steps.meta.outputs.mentions) }}
+            main_mention: "${{ steps.meta.outputs.main_mention }}"
+            mention_1: "${{ steps.meta.outputs.mention_1 }}"
+            mention_2: "${{ steps.meta.outputs.mention_2 }}"
+            mention_3: "${{ steps.meta.outputs.mention_3 }}"
+            mention_4: "${{ steps.meta.outputs.mention_4 }}"
+            mention_5: "${{ steps.meta.outputs.mention_5 }}"
