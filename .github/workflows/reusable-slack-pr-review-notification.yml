@@ -1,0 +1,149 @@
+# Reusable workflow: slack-pr-review-notification — GitHub -> Slack review pings.
+# Feeds ONE Slack Workflow Builder workflow ("PR Summary") via its webhook
+# trigger; the Slack workflow branches on `event_type` to pick wording and drops
+# `mentions` (pre-rendered <@SLACK_ID> tokens) into the message so the right
+# people are @-tagged.
+#
+# Three behaviors, all inherited from the CALLER's `on:` block (a reusable's own
+# trigger is workflow_call, so all branching keys off github.event_name /
+# github.event.*, which carry the caller's originating event):
+#   - review_requested   -> ping the reviewer who was just requested
+#   - review submitted    -> ping the PR author (approved / changes_requested / commented)
+#   - synchronize         -> branch got a new revision: ping everyone who has
+#                            already reviewed or commented (minus the author)
+#
+# Slack member IDs are resolved from a github-login -> ID map stored as the
+# secret SLACK_PR_REVIEW_USER_MAP (a JSON object, e.g. {"jariy17":"U03..."}).
+# An unmapped (or unparseable) login falls back to a plain "@login" (visible,
+# but not a real ping) so the message is never wrong, just un-pinged.
+#
+# Requires two inherited secrets, both fetched from Secrets Manager:
+#   - SLACK_PR_REVIEW_WEBHOOK_URL  the "PR Summary" Slack workflow webhook URL
+#   - SLACK_PR_REVIEW_USER_MAP     JSON github-login -> Slack member ID
+
+name: Reusable - Slack PR Review Notification
+
+# caller-on:
+#   pull_request:
+#     types: [review_requested, synchronize]
+#   pull_request_review:
+#     types: [submitted]
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        required: false
+        type: string
+        default: ubuntu
+
+permissions:
+  pull-requests: read
+  contents: read
+  id-token: write
+
+jobs:
+  notify:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    permissions:
+      pull-requests: read
+      contents: read
+      id-token: write
+    steps:
+      - name: Fetch secrets from Secrets Manager
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          shared: SLACK_PR_REVIEW_WEBHOOK_URL, SLACK_PR_REVIEW_USER_MAP
+
+      - name: Resolve event, targets and mentions
+        id: meta
+        # The login->Slack-ID map is a JSON secret; passed through env: (never
+        # interpolated into the script body) so its value stays masked.
+        env:
+          USER_MAP: ${{ env.SLACK_PR_REVIEW_USER_MAP }}
+        uses: actions/github-script@v9
+        with:
+          script: |
+            // github-login -> Slack member ID, from the SLACK_PR_REVIEW_USER_MAP
+            // JSON secret. A bad/absent value degrades to {} -> plain "@login".
+            let SLACK = {};
+            try { SLACK = JSON.parse(process.env.USER_MAP || "{}"); }
+            catch (e) { core.warning(`SLACK_PR_REVIEW_USER_MAP is not valid JSON: ${e.message}`); }
+            const at = (login) =>
+              !login ? "" : (SLACK[login] ? `<@${SLACK[login]}>` : `@${login}`);
+
+            const ev = context.eventName;
+            const p = context.payload;
+            const pr = p.pull_request;
+            const author = pr.user.login;
+
+            let eventType = "", actor = "", reviewState = "", mentions = "", send = false;
+
+            if (ev === "pull_request" && p.action === "review_requested") {
+              // requested_reviewer is absent for team requests — only ping individuals.
+              const reviewer = p.requested_reviewer && p.requested_reviewer.login;
+              if (reviewer) {
+                eventType = "review_requested";
+                actor = author;
+                mentions = at(reviewer);
+                send = true;
+              }
+            } else if (ev === "pull_request_review" && p.action === "submitted") {
+              eventType = "review_submitted";
+              actor = p.review.user.login;
+              reviewState = p.review.state; // approved | changes_requested | commented
+              mentions = at(author);
+              send = actor !== author; // don't ping a self-review
+            } else if (ev === "pull_request" && p.action === "synchronize") {
+              // New revision pushed: gather everyone who already reviewed or commented.
+              const { owner, repo } = context.repo;
+              const [reviews, comments] = await Promise.all([
+                github.paginate(github.rest.pulls.listReviews,
+                  { owner, repo, pull_number: pr.number, per_page: 100 }),
+                github.paginate(github.rest.issues.listComments,
+                  { owner, repo, issue_number: pr.number, per_page: 100 }),
+              ]);
+              const logins = new Set(
+                [...reviews.map(r => r.user && r.user.login),
+                 ...comments.map(c => c.user && c.user.login)]
+                  .filter(l => l && l !== author)
+              );
+              if (logins.size) {
+                eventType = "branch_updated";
+                actor = author;
+                mentions = [...logins].map(at).join(" ");
+                send = true;
+              }
+            }
+
+            core.setOutput("send", String(send));
+            core.setOutput("event_type", eventType);
+            core.setOutput("actor", actor);
+            core.setOutput("review_state", reviewState);
+            core.setOutput("mentions", mentions);
+
+      - name: Send review notification to Slack
+        if: steps.meta.outputs.send == 'true'
+        # pr_title is attacker-controllable, so it's passed through env: and
+        # toJSON'd rather than interpolated into the YAML payload (workflow
+        # injection guard, matching reusable-slack-issue-notification). Every
+        # payload sends the same key set so the Slack workflow can branch
+        # reliably; keys that don't apply to an event are sent empty.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        uses: slackapi/slack-github-action@v3.0.3
+        with:
+          webhook: ${{ env.SLACK_PR_REVIEW_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
+          payload: |
+            event_type: "${{ steps.meta.outputs.event_type }}"
+            repository: "${{ github.repository }}"
+            pr_number: "${{ github.event.pull_request.number }}"
+            pr_title: ${{ toJSON(env.PR_TITLE) }}
+            pr_url: "${{ github.event.pull_request.html_url }}"
+            pr_author: "${{ github.event.pull_request.user.login }}"
+            actor: "${{ steps.meta.outputs.actor }}"
+            review_state: "${{ steps.meta.outputs.review_state }}"
+            mentions: ${{ toJSON(steps.meta.outputs.mentions) }}
