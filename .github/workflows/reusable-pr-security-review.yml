@@ -4,8 +4,8 @@
 # coverage matrix).
 #
 # A reusable workflow (on: workflow_call) cannot filter the trigger's branches, so the
-# `authorize` job gates instead: pull_request_target only reviews PRs into `main`. This
-# is uniform across consumers (no per-repo config).
+# caller supplies an exact JSON allowlist for a second authorization gate. The default
+# remains `["main"]`; consumers opt into additional long-lived or migration branches.
 #
 # Caller requirement: the manual smoke-test path reads inputs.pr_number,
 # inherited from the caller's own workflow_dispatch, so a caller wanting smoke tests
@@ -45,6 +45,11 @@ on:
         description: PR number to review (workflow_dispatch will NOT post inline comments — use only for prompt smoke tests)
         required: true
         type: string
+      allowed_base_branches:
+        description: JSON array of pull request base branches allowed to run the review.
+        required: false
+        type: string
+        default: '["main"]'
 
 permissions:
   id-token: write
@@ -63,15 +68,15 @@ concurrency:
 jobs:
   authorize:
     runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    # A reusable workflow can't filter the trigger's branches, so gate here instead:
-    #  - pull_request_target only reviews PRs into the long-lived `main` branch.
+    # A reusable workflow can't filter the trigger's branches, so gate here too:
+    #  - pull_request_target reviews only caller-approved base branches.
     #  - On 'labeled' events, only proceed when the label is exactly 'safe-to-review'.
     #    Other labels (e.g. size/m) are filtered out so we don't spawn API calls.
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
         github.event_name == 'pull_request_target' &&
-        github.event.pull_request.base.ref == 'main' &&
+        contains(fromJSON(inputs.allowed_base_branches), github.event.pull_request.base.ref) &&
         (github.event.action != 'labeled' || github.event.label.name == 'safe-to-review')
       )
     outputs:

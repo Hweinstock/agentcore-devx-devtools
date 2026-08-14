@@ -1,0 +1,196 @@
+# Reusable workflow: AgentCore Harness PR review.
+#
+# The caller owns event triggers, permissions, runner choice, and repository-specific
+# prompts. This workflow owns authorization, labels, credentials, Harness invocation,
+# and publishing. It supports both the central Secrets Manager convention and legacy
+# callers that still store HARNESS_AWS_ROLE_ARN / HARNESS_ARN as GitHub secrets.
+
+name: Reusable - AgentCore Harness Reviewing
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: "Runner to use: 'ubuntu' (default) or 'codebuild'."
+        required: false
+        type: string
+        default: ubuntu
+      pr_url:
+        description: Full GitHub pull request URL to review.
+        required: true
+        type: string
+      system_prompt_path:
+        description: Path to the caller repository's Harness system prompt.
+        required: false
+        type: string
+        default: .github/harness/prompts/system.md
+      review_prompt_path:
+        description: Path to the caller repository's Harness review prompt.
+        required: false
+        type: string
+        default: .github/harness/prompts/review.md
+      model_id:
+        description: Bedrock model ID used by the Harness reviewer.
+        required: false
+        type: string
+        default: us.anthropic.claude-opus-4-7
+      team_slug:
+        description: Optional organization team whose members may trigger reviews.
+        required: false
+        type: string
+        default: agentcore-cli-devs
+      secret_source:
+        description: "Credential source: 'secrets-manager' or 'github'."
+        required: false
+        type: string
+        default: secrets-manager
+
+permissions:
+  id-token: write
+  pull-requests: write
+  issues: write
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.state == 'open'
+      )
+    outputs:
+      authorized: ${{ steps.auth.outputs.is-authorized || steps.dispatch-auth.outputs.authorized }}
+    steps:
+      - name: Check authorization
+        id: auth
+        if: github.event_name == 'pull_request_target'
+        uses: aws/agentcore-devx-devtools/.github/actions/check-collaborator@31aa3b031a86664e29861d68956e44b07cf21a74
+        with:
+          subject: ${{ github.event.pull_request.user.login }}
+          required-permission: write
+          team-slug: ${{ inputs.team_slug }}
+
+      - name: Auto-authorize workflow_dispatch
+        id: dispatch-auth
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "authorized=true" >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ${{ inputs.runner == 'codebuild' && format('codebuild-agentcore-e2e-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Validate inputs
+        env:
+          SECRET_SOURCE: ${{ inputs.secret_source }}
+        run: |
+          if [[ "$SECRET_SOURCE" != "secrets-manager" && "$SECRET_SOURCE" != "github" ]]; then
+            echo "::error::secret_source must be 'secrets-manager' or 'github'."
+            exit 1
+          fi
+
+      - name: Extract PR number
+        id: pr-number
+        env:
+          PR_URL: ${{ inputs.pr_url }}
+        run: |
+          PR_NUM="${PR_URL##*/}"
+          if [[ ! "$PR_NUM" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid pull request URL: $PR_URL"
+            exit 1
+          fi
+          echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Add agentcore-harness-reviewing label
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ steps.pr-number.outputs.number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'agentcore-harness-reviewing',
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'agentcore-harness-reviewing',
+                  color: '7B61FF',
+                  description: 'AgentCore Harness review in progress',
+                });
+              } else {
+                throw error;
+              }
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: ['agentcore-harness-reviewing'],
+            });
+
+      - name: Checkout caller repository
+        uses: actions/checkout@v7
+
+      - name: Fetch Harness secrets from Secrets Manager
+        if: inputs.secret_source == 'secrets-manager'
+        uses: aws/agentcore-devx-devtools/.github/actions/fetch-secrets@31aa3b031a86664e29861d68956e44b07cf21a74
+        with:
+          role-arn: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+          repo: HARNESS_AWS_ROLE_ARN, HARNESS_ARN
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ inputs.secret_source == 'github' && secrets.HARNESS_AWS_ROLE_ARN || env.HARNESS_AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          unset-current-credentials: true
+
+      - name: Set up Python 3.12 with uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          activate-environment: true
+
+      - name: Install boto3
+        run: uv pip install boto3
+
+      - name: Run Harness review
+        uses: aws/agentcore-devx-devtools/.github/actions/harness-review@20441d03ec1be9944a2958be6b1264cda49a1772
+        with:
+          pr-url: ${{ inputs.pr_url }}
+          harness-arn: ${{ inputs.secret_source == 'github' && secrets.HARNESS_ARN || env.HARNESS_ARN }}
+          github-token: ${{ github.token }}
+          system-prompt-path: ${{ inputs.system_prompt_path }}
+          review-prompt-path: ${{ inputs.review_prompt_path }}
+          model-id: ${{ inputs.model_id }}
+
+      - name: Remove agentcore-harness-reviewing label
+        if: always()
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ steps.pr-number.outputs.number }}
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            if (!Number.isInteger(prNumber)) {
+              return;
+            }
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                name: 'agentcore-harness-reviewing',
+              });
+            } catch (error) {
+              console.log('Label removal failed (may not exist):', error.message);
+            }

@@ -6,6 +6,8 @@ Shared developer tools for the AgentCore repositories: [agentcore-cli](https://g
 
 The `.github/workflows/` directory contains reusable workflows. Each is invoked via [`workflow_call`](https://docs.github.com/en/actions/using-workflows/reusing-workflows) from a caller workflow in a consuming repo.
 
+`reusable-pr-ai-review.yml` centralizes AgentCore Harness review mechanics while
+callers retain their event triggers and repository-specific prompts.
 
 ## Security
 
