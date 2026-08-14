@@ -1,0 +1,39 @@
+name: Harness review
+description: Invoke an AgentCore Harness and publish its final review to a GitHub pull request.
+
+inputs:
+  pr-url:
+    description: Full GitHub pull request URL to review.
+    required: true
+  harness-arn:
+    description: ARN of the AgentCore Harness to invoke.
+    required: true
+  github-token:
+    description: Short-lived token used to read PR discussion and publish the review.
+    required: true
+  system-prompt-path:
+    description: Path to the caller repository's Harness system prompt.
+    required: false
+    default: .github/harness/prompts/system.md
+  review-prompt-path:
+    description: Path to the caller repository's Harness review prompt.
+    required: false
+    default: .github/harness/prompts/review.md
+  model-id:
+    description: Bedrock model ID used by the Harness reviewer.
+    required: false
+    default: us.anthropic.claude-opus-4-7
+
+runs:
+  using: composite
+  steps:
+    - name: Invoke Harness and publish review
+      shell: bash
+      env:
+        PR_URL: ${{ inputs.pr-url }}
+        HARNESS_ARN: ${{ inputs.harness-arn }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SYSTEM_PROMPT_PATH: ${{ inputs.system-prompt-path }}
+        REVIEW_PROMPT_PATH: ${{ inputs.review-prompt-path }}
+        HARNESS_MODEL_ID: ${{ inputs.model-id }}
+      run: python "$GITHUB_ACTION_PATH/harness_review.py"
