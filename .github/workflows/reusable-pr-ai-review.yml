@@ -104,11 +104,19 @@ jobs:
           fi
           echo "number=$PR_NUM" >> "$GITHUB_OUTPUT"
 
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Add agentcore-harness-reviewing label
         uses: actions/github-script@v9
         env:
           PR_NUMBER: ${{ steps.pr-number.outputs.number }}
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
             try {
@@ -168,7 +176,7 @@ jobs:
         with:
           pr-url: ${{ inputs.pr_url }}
           harness-arn: ${{ inputs.secret_source == 'github' && secrets.HARNESS_ARN || env.HARNESS_ARN }}
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.app-token.outputs.token }}
           system-prompt-path: ${{ inputs.system_prompt_path }}
           review-prompt-path: ${{ inputs.review_prompt_path }}
           model-id: ${{ inputs.model_id }}
@@ -179,6 +187,7 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.pr-number.outputs.number }}
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
             if (!Number.isInteger(prNumber)) {
