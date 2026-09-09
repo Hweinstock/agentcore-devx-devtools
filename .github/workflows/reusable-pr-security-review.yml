@@ -86,11 +86,15 @@ jobs:
       - name: Resolve subject
         id: subject
         if: github.event_name == 'pull_request_target'
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
-          if [ "${{ github.event.action }}" = "labeled" ]; then
-            echo "login=${{ github.event.sender.login }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_ACTION" = "labeled" ]; then
+            echo "login=$SENDER_LOGIN" >> "$GITHUB_OUTPUT"
           else
-            echo "login=${{ github.event.pull_request.user.login }}" >> "$GITHUB_OUTPUT"
+            echo "login=$PR_AUTHOR_LOGIN" >> "$GITHUB_OUTPUT"
           fi
       # Authorized = member of the org team OR a write/admin collaborator (team tier first).
       - name: Check authorization

@@ -88,8 +88,10 @@ jobs:
           required-permission: write
       - name: Enforce authorization
         if: github.event_name != 'workflow_dispatch' && steps.authz.outputs.is-authorized != 'true'
+        env:
+          COMMENT_USER: ${{ github.event.comment.user.login }}
         run: |
-          echo "❌ User ${{ github.event.comment.user.login }} does not have write access"
+          echo "❌ User $COMMENT_USER does not have write access"
           exit 1
 
       - name: Checkout
