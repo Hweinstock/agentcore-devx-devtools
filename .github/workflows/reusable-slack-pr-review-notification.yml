@@ -33,10 +33,10 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: "Runner to use: 'ubuntu' (GitHub-hosted, default) or 'codebuild' (self-hosted CodeBuild fleet)"
+        description: "Runner to use: 'codebuild' (self-hosted CodeBuild fleet, default) or 'ubuntu' (GitHub-hosted)"
         required: false
         type: string
-        default: ubuntu
+        default: codebuild
 
 permissions:
   pull-requests: read
