@@ -20,13 +20,7 @@ function registerMask(value) {
  * @see {@link https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-an-output-parameter}
  */
 function main(environment = process.env) {
-  /**
-   * Formats one input list as alias and secret path pairs.
-   *
-   * @param names - Comma- or whitespace-separated secret names.
-   * @param prefix - Secrets Manager path prefix.
-   * @returns Alias and secret ID pairs.
-   */
+  // Format each name as "<alias>,<prefix>/<name>".
   const formatIds = (names = "", prefix) =>
     names
       .split(/[,\s]+/)
