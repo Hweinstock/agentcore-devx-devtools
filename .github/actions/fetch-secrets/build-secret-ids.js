@@ -19,12 +19,8 @@ function buildSecretIds(sharedNames, repoNames, callerRepo) {
   ];
 }
 
-function maskCommand(value) {
-  return `::add-mask::${value}`;
-}
-
 function registerMask(value) {
-  console.log(maskCommand(value));
+  console.log(`::add-mask::${value}`);
 }
 
 function main(environment = process.env) {
@@ -57,7 +53,6 @@ if (require.main === module) {
 module.exports = {
   buildSecretIds,
   main,
-  maskCommand,
   parseNames,
   registerMask,
 };
