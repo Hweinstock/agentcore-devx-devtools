@@ -1,6 +1,6 @@
 const fs = require("node:fs");
 
-const OUTPUT_DELIMITER = "SECRET_IDS_EOF";
+const OUTPUT_DELIMITER = "SECRET_MAPPINGS_EOF";
 
 /**
  * Registers a value for redaction from subsequent GitHub Actions logs.
@@ -21,19 +21,19 @@ function registerMask(value) {
  */
 function main(environment = process.env) {
   // Format each name as "<alias>,<prefix>/<name>".
-  const formatIds = (names = "", prefix) =>
+  const formatMappings = (names = "", prefix) =>
     names
       .split(/[,\s]+/)
       .map((name) => name.trim())
       .filter(Boolean)
       .map((name) => `${name},${prefix}/${name}`);
 
-  const secretIds = [
-    ...formatIds(environment.SHARED_NAMES, "shared"),
-    ...formatIds(environment.REPO_NAMES, environment.CALLER_REPO),
+  const secretMappings = [
+    ...formatMappings(environment.SHARED_NAMES, "shared"),
+    ...formatMappings(environment.REPO_NAMES, environment.CALLER_REPO),
   ];
 
-  if (secretIds.length === 0) {
+  if (secretMappings.length === 0) {
     console.error(
       "::error::fetch-secrets: neither 'shared' nor 'repo' provided any secret names.",
     );
@@ -41,11 +41,13 @@ function main(environment = process.env) {
     return;
   }
 
-  console.log(`Resolved secret-ids:\n${secretIds.map((id) => `  ${id}`).join("\n")}`);
+  console.log(
+    `Resolved secret mappings:\n${secretMappings.map((mapping) => `  ${mapping}`).join("\n")}`,
+  );
 
   fs.appendFileSync(
     environment.GITHUB_OUTPUT,
-    `ids<<${OUTPUT_DELIMITER}\n${secretIds.join("\n")}\n${OUTPUT_DELIMITER}\n`,
+    `mappings<<${OUTPUT_DELIMITER}\n${secretMappings.join("\n")}\n${OUTPUT_DELIMITER}\n`,
   );
 }
 

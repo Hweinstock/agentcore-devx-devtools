@@ -38,7 +38,7 @@ runs:
         ROLE_ARN: ${{ inputs.role-arn }}
       run: |
         const path = require("node:path");
-        const { registerMask } = require(path.join(process.env.ACTION_PATH, "build-secret-ids.js"));
+        const { registerMask } = require(path.join(process.env.ACTION_PATH, "build-secret-mappings.js"));
         registerMask(process.env.ROLE_ARN);
 
     - name: Configure AWS credentials (central secrets reader)
@@ -48,7 +48,7 @@ runs:
         aws-region: ${{ inputs.aws-region }}
         mask-aws-account-id: true
 
-    - name: Build secret-ids list
+    - name: Build secret mappings
       id: build
       shell: node {0}
       env:
@@ -58,11 +58,11 @@ runs:
         CALLER_REPO: ${{ github.repository }}
       run: |
         const path = require("node:path");
-        const { main } = require(path.join(process.env.ACTION_PATH, "build-secret-ids.js"));
+        const { main } = require(path.join(process.env.ACTION_PATH, "build-secret-mappings.js"));
         main();
 
     - name: Fetch secrets
       uses: aws-actions/aws-secretsmanager-get-secrets@v2
       with:
-        secret-ids: ${{ steps.build.outputs.ids }}
+        secret-ids: ${{ steps.build.outputs.mappings }}
         parse-json-secrets: false
