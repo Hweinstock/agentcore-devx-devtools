@@ -2,6 +2,12 @@ const fs = require("node:fs");
 
 const OUTPUT_DELIMITER = "SECRET_IDS_EOF";
 
+/**
+ * Parses comma- or whitespace-separated secret names.
+ *
+ * @param names - Raw action input.
+ * @returns The non-empty secret names in input order.
+ */
 function parseNames(names = "") {
   return names
     .split(/[,\s]+/)
@@ -9,6 +15,15 @@ function parseNames(names = "") {
     .filter(Boolean);
 }
 
+/**
+ * Formats aliases and secret paths for the Secrets Manager action.
+ *
+ * @param sharedNames - Names resolved below the shared prefix.
+ * @param repoNames - Names resolved below the calling repository prefix.
+ * @param callerRepo - Calling repository in owner/name form.
+ * @returns Alias and secret ID pairs.
+ * @see {@link https://github.com/aws-actions/aws-secretsmanager-get-secrets}
+ */
 function buildSecretIds(sharedNames, repoNames, callerRepo) {
   const formatIds = (names, prefix) =>
     parseNames(names).map((name) => `${name},${prefix}/${name}`);
@@ -19,10 +34,22 @@ function buildSecretIds(sharedNames, repoNames, callerRepo) {
   ];
 }
 
+/**
+ * Registers a value for redaction from subsequent GitHub Actions logs.
+ *
+ * @param value - Sensitive value to mask.
+ * @see {@link https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#masking-a-value-in-a-log}
+ */
 function registerMask(value) {
   console.log(`::add-mask::${value}`);
 }
 
+/**
+ * Resolves action inputs and appends the multiline secret ID step output.
+ *
+ * @param environment - GitHub Actions environment variables.
+ * @see {@link https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-an-output-parameter}
+ */
 function main(environment = process.env) {
   const secretIds = buildSecretIds(
     environment.SHARED_NAMES,
