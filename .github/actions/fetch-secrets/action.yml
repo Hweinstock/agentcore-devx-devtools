@@ -32,8 +32,14 @@ runs:
   using: composite
   steps:
     - name: Register role ARN mask
-      shell: bash
-      run: echo "::add-mask::${{ inputs.role-arn }}"
+      shell: node {0}
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ROLE_ARN: ${{ inputs.role-arn }}
+      run: |
+        const path = require("node:path");
+        const { registerMask } = require(path.join(process.env.ACTION_PATH, "build-secret-ids.js"));
+        registerMask(process.env.ROLE_ARN);
 
     - name: Configure AWS credentials (central secrets reader)
       uses: aws-actions/configure-aws-credentials@v6
@@ -44,39 +50,16 @@ runs:
 
     - name: Build secret-ids list
       id: build
-      shell: bash
+      shell: node {0}
       env:
+        ACTION_PATH: ${{ github.action_path }}
         SHARED_NAMES: ${{ inputs.shared }}
         REPO_NAMES: ${{ inputs.repo }}
         CALLER_REPO: ${{ github.repository }}
       run: |
-        set -euo pipefail
-        # Normalize commas/spaces to newlines, drop blanks; build "<NAME>,<folder>/<NAME>".
-        # Alias = the bare NAME, so each secret lands in an env var of that exact name.
-        : > /tmp/secret-ids.txt
-        emit() {
-          local prefix="$1" names="$2"
-          echo "$names" | tr ', ' '\n\n' | while IFS= read -r n; do
-            n="$(echo "$n" | xargs)"        # trim surrounding whitespace
-            [ -z "$n" ] && continue
-            echo "${n},${prefix}/${n}" >> /tmp/secret-ids.txt
-          done
-        }
-        emit "shared" "$SHARED_NAMES"
-        emit "$CALLER_REPO" "$REPO_NAMES"
-
-        if [ ! -s /tmp/secret-ids.txt ]; then
-          echo "::error::fetch-secrets: neither 'shared' nor 'repo' provided any secret names."
-          exit 1
-        fi
-
-        echo "Resolved secret-ids:"
-        sed 's/^/  /' /tmp/secret-ids.txt
-        {
-          echo "ids<<SECRET_IDS_EOF"
-          cat /tmp/secret-ids.txt
-          echo "SECRET_IDS_EOF"
-        } >> "$GITHUB_OUTPUT"
+        const path = require("node:path");
+        const { main } = require(path.join(process.env.ACTION_PATH, "build-secret-ids.js"));
+        main();
 
     - name: Fetch secrets
       uses: aws-actions/aws-secretsmanager-get-secrets@v2
