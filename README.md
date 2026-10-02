@@ -9,6 +9,31 @@ The `.github/workflows/` directory contains reusable workflows. Each is invoked 
 `reusable-pr-ai-review.yml` centralizes AgentCore Harness review mechanics while
 callers retain their event triggers and repository-specific prompts.
 
+`workflow-metrics.yml` emits `WorkflowRunDuration` for a completed
+`workflow_run`. Callers provide the namespace, OS, and writer-role secret name,
+grant `id-token: write`, and pass `WORKFLOW_SECRETS_READER_ROLE_ARN`. Pin the
+workflow to a full commit SHA. The writer role needs `cloudwatch:PutMetricData`.
+
+```yaml
+on:
+  workflow_run:
+    workflows: [canary]
+    types: [completed]
+
+permissions:
+  id-token: write
+
+jobs:
+  metrics:
+    uses: aws/agentcore-devx-devtools/.github/workflows/workflow-metrics.yml@<ref>
+    with:
+      namespace: AgentCoreCLI/Workflows
+      os: Linux
+      role-secret-name: E2E_AWS_ROLE_ARN
+    secrets:
+      WORKFLOW_SECRETS_READER_ROLE_ARN: ${{ secrets.WORKFLOW_SECRETS_READER_ROLE_ARN }}
+```
+
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
